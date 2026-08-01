@@ -32,11 +32,16 @@ check "sample-app /health returns 200" bash -c \
 check "sample-app /metrics exposes custom counter" bash -c \
   "$CURL -H 'Host: sample-app.local' http://localhost:8888/metrics | grep -q sample_app_requests_total"
 
-echo "==> Port-forwarding Prometheus to check sample-app target"
+check "sample-app /greeting reaches greeter across namespaces" bash -c \
+  "$CURL -H 'Host: sample-app.local' http://localhost:8888/greeting | jq -e '.greeting' >/dev/null"
+
+echo "==> Port-forwarding Prometheus to check sample-app and greeter targets"
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 >/tmp/prom-pf.log 2>&1 &
 PROM_PID=$!
 check "Prometheus has an up target for sample-app" bash -c \
   "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"sample-app\" and .health==\"up\")' >/dev/null"
+check "Prometheus has an up target for greeter" bash -c \
+  "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"greeter\" and .health==\"up\")' >/dev/null"
 kill "$PROM_PID" 2>/dev/null || true
 
 echo "==> Port-forwarding Grafana to check health"
@@ -48,6 +53,12 @@ kill "$GRAFANA_PID" 2>/dev/null || true
 
 check "default-deny NetworkPolicy exists in app namespace" bash -c \
   "kubectl get networkpolicy -n app default-deny-ingress >/dev/null 2>&1"
+
+check "default-deny NetworkPolicy exists in backend namespace" bash -c \
+  "kubectl get networkpolicy -n backend default-deny-ingress >/dev/null 2>&1"
+
+check "Gatekeeper blocks a non-compliant pod in the app namespace" bash -c \
+  "! kubectl run gatekeeper-smoke-test -n app --image=nginx:latest --restart=Never --dry-run=server >/dev/null 2>&1"
 
 if [ "$FAIL" -ne 0 ]; then
   echo "==> One or more checks FAILED"
