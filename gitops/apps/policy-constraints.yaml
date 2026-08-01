@@ -1,0 +1,27 @@
+# Split from policy-templates into its own Application on purpose: ArgoCD does
+# upfront API-discovery validation across every resource in a single sync as one
+# batch, so if the Constraint CRDs (created by the ConstraintTemplates) don't exist
+# yet, that discovery failure blocks the *entire* sync -- including the templates
+# that would have created those CRDs in the first place. Two Applications means
+# this one can fail and retry independently (ArgoCD's automated selfHeal backoff)
+# without blocking policy-templates, sample-app, greeter, or monitoring.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: policy-constraints
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/soodrajesh/minikube-gitops-platform.git
+    targetRevision: main
+    path: gitops/policies/constraints
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gatekeeper-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

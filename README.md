@@ -29,10 +29,12 @@ graph TD
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
-  `gitops/apps/`, which declares four child Applications: `sample-app`, `greeter`,
+  `gitops/apps/`, which declares five child Applications: `sample-app`, `greeter`,
   `kube-prometheus-stack` (upstream Helm chart + `monitoring/values.yaml` via multi-source), and
-  `policies` (Gatekeeper ConstraintTemplates/Constraints). From that point on, `git push` is the
-  only deployment step — ArgoCD polls this repo and reconciles the cluster automatically
+  `policy-templates` + `policy-constraints` (Gatekeeper, split into two Applications on purpose —
+  see the comment in `gitops/apps/policy-constraints.yaml` for why). From that point on,
+  `git push` is the only deployment step — ArgoCD polls this repo and reconciles the cluster
+  automatically
   (`prune: true`, `selfHeal: true`).
 - **sample-app** (`app/`): a small Flask app with `/health`, `/metrics`, `/`, and `/greeting`
   (calls `greeter` over HTTP and returns its response, or a `502` if it's unreachable).
@@ -130,7 +132,8 @@ Tear down when done:
 │   │   ├── sample-app.yaml      # Application CR -> gitops/sample-app/
 │   │   ├── greeter.yaml         # Application CR -> gitops/greeter/
 │   │   ├── monitoring.yaml      # Application CR -> kube-prometheus-stack chart + monitoring/values.yaml
-│   │   └── policies.yaml        # Application CR -> gitops/policies/
+│   │   ├── policy-templates.yaml    # Application CR -> gitops/policies/templates/
+│   │   └── policy-constraints.yaml  # Application CR -> gitops/policies/constraints/
 │   ├── sample-app/               # plain k8s manifests for sample-app
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
@@ -141,8 +144,9 @@ Tear down when done:
 │   │   ├── service.yaml
 │   │   └── networkpolicy.yaml
 │   └── policies/                 # Gatekeeper ConstraintTemplates + Constraints
-│       ├── templates/            # sync-wave 0: applied first
-│       └── constraints/          # sync-wave 1: applied after templates' CRDs exist
+│       ├── templates/            # synced by the policy-templates Application
+│       └── constraints/          # synced by the policy-constraints Application (after
+│                                  # policy-templates' CRDs exist -- see that Application's comment)
 ├── monitoring/
 │   └── values.yaml               # kube-prometheus-stack values (lean footprint + both apps' ServiceMonitors)
 ├── scripts/

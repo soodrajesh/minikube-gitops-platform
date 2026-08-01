@@ -1,16 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: policies
+  name: policy-templates
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/soodrajesh/minikube-gitops-platform.git
     targetRevision: main
-    path: gitops/policies
-    directory:
-      recurse: true
+    path: gitops/policies/templates
   destination:
     server: https://kubernetes.default.svc
     namespace: gatekeeper-system
