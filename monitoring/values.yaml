@@ -1,6 +1,16 @@
 # Lean kube-prometheus-stack values for a local minikube demo.
 # Trims resource usage and disables components not needed for this repo's scope.
 
+# CRDs are installed separately (scripts/bootstrap.sh), not by this Helm release.
+# The prometheus-operator CRDs are large enough that ArgoCD's client-side apply
+# of them exceeds the Kubernetes 262144-byte metadata.annotations limit; letting
+# the chart manage them through ArgoCD hits that every sync. Installing them
+# once via `kubectl apply --server-side` and disabling them here is the
+# documented workaround (and matches how most real ArgoCD + kube-prometheus-stack
+# deployments are run).
+crds:
+  enabled: false
+
 prometheus:
   prometheusSpec:
     retention: 6h

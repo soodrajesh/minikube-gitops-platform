@@ -16,9 +16,21 @@ echo "==> Building sample-app image inside minikube's docker daemon"
 eval "$(minikube -p "$PROFILE" docker-env)"
 docker build -t sample-app:local "$(dirname "$0")/../app"
 
-echo "==> Adding argo helm repo"
+echo "==> Adding argo + prometheus-community helm repos"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null
 helm repo update >/dev/null
+
+# kube-prometheus-stack's CRDs are large enough that ArgoCD's client-side apply of
+# them exceeds Kubernetes' 262144-byte metadata.annotations limit. Install them
+# once here via true server-side apply (crds.enabled: false in monitoring/values.yaml
+# stops the Helm release itself from trying to manage them through ArgoCD).
+KPS_VERSION="62.7.0"
+echo "==> Installing kube-prometheus-stack CRDs ($KPS_VERSION) via server-side apply"
+KPS_DIR="$(mktemp -d)"
+helm pull prometheus-community/kube-prometheus-stack --version "$KPS_VERSION" --untar --untardir "$KPS_DIR"
+kubectl apply --server-side --force-conflicts -f "$KPS_DIR/kube-prometheus-stack/charts/crds/crds/"
+rm -rf "$KPS_DIR"
 
 echo "==> Installing ArgoCD"
 kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
