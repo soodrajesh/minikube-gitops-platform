@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Helm
+*.tgz
+
+# Local secrets / kubeconfig dumps, just in case
+*.kubeconfig
+secrets.yaml
+config.yaml
+
+# OS
+.DS_Store

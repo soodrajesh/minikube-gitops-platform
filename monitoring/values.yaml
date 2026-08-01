@@ -1,0 +1,75 @@
+# Lean kube-prometheus-stack values for a local minikube demo.
+# Trims resource usage and disables components not needed for this repo's scope.
+
+prometheus:
+  prometheusSpec:
+    retention: 6h
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    storageSpec: {}
+
+grafana:
+  # No adminPassword set here on purpose: the chart auto-generates a random
+  # password into a Secret (<release>-grafana). Retrieve it with:
+  #   kubectl get secret -n monitoring kube-prometheus-stack-grafana \
+  #     -o jsonpath="{.data.admin-password}" | base64 -d
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - grafana.local
+    path: /
+  sidecar:
+    dashboards:
+      enabled: true
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+# Drop heavier optional components not needed for this lean demo.
+nodeExporter:
+  enabled: true
+kubeStateMetrics:
+  enabled: true
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+additionalServiceMonitors:
+  - name: sample-app
+    selector:
+      matchLabels:
+        app: sample-app
+    namespaceSelector:
+      matchNames:
+        - app
+    endpoints:
+      - port: http
+        path: /metrics
+        interval: 15s
