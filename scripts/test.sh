@@ -36,7 +36,7 @@ echo "==> Port-forwarding Prometheus to check sample-app target"
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 >/tmp/prom-pf.log 2>&1 &
 PROM_PID=$!
 check "Prometheus has an up target for sample-app" bash -c \
-  "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"app/sample-app\" and .health==\"up\")' >/dev/null"
+  "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"sample-app\" and .health==\"up\")' >/dev/null"
 kill "$PROM_PID" 2>/dev/null || true
 
 echo "==> Port-forwarding Grafana to check health"
