@@ -24,6 +24,18 @@ prometheus:
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     storageSpec: {}
+  additionalServiceMonitors:
+    - name: sample-app
+      selector:
+        matchLabels:
+          app: sample-app
+      namespaceSelector:
+        matchNames:
+          - app
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 15s
 
 grafana:
   # No adminPassword set here on purpose: the chart auto-generates a random
@@ -70,16 +82,3 @@ prometheusOperator:
     limits:
       cpu: 200m
       memory: 256Mi
-
-additionalServiceMonitors:
-  - name: sample-app
-    selector:
-      matchLabels:
-        app: sample-app
-    namespaceSelector:
-      matchNames:
-        - app
-    endpoints:
-      - port: http
-        path: /metrics
-        interval: 15s
