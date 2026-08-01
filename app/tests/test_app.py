@@ -25,3 +25,12 @@ def test_metrics():
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert b"sample_app_requests_total" in resp.data
+
+
+def test_greeting_fails_gracefully_when_greeter_unreachable():
+    # No greeter service exists in this test environment; the endpoint should
+    # report the failure instead of crashing.
+    client = app.test_client()
+    resp = client.get("/greeting")
+    assert resp.status_code == 502
+    assert "error" in resp.get_json()

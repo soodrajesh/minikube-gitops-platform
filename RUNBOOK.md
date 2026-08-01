@@ -26,9 +26,10 @@ jq --version                # used by scripts/deploy.sh
 
 What this does, in order: starts minikube (4 CPU / 6GB by default — override with
 `MINIKUBE_CPUS`/`MINIKUBE_MEMORY` env vars), enables the `ingress` and `metrics-server` addons,
-builds the sample app's Docker image directly into minikube's Docker daemon, installs the
+builds both apps' Docker images directly into minikube's Docker daemon, installs the
 prometheus-operator CRDs via `kubectl apply --server-side` (see "Why server-side apply" in
-SECURITY.md/README if curious why that's a separate step), then installs ArgoCD via Helm.
+SECURITY.md/README if curious why that's a separate step), then installs ArgoCD and Gatekeeper
+via Helm.
 
 At the end it prints ArgoCD's admin password. If you need it again later:
 
@@ -42,8 +43,9 @@ Then apply the GitOps root Application and wait for ArgoCD to sync everything:
 ./scripts/deploy.sh
 ```
 
-This should end with a table showing `sample-app`, `kube-prometheus-stack`, and `root-app` all
-`Synced` / `Healthy`. If it's not, see **Troubleshooting** below before moving on.
+This should end with a table showing `sample-app`, `greeter`, `kube-prometheus-stack`,
+`policies`, and `root-app` all `Synced` / `Healthy`. If it's not, see **Troubleshooting** below
+before moving on.
 
 ## 2. Verify it's healthy
 
@@ -56,16 +58,39 @@ Automated version (does everything below for you, with real pass/fail output):
 If you want to check things by hand instead:
 
 ```bash
-# All three Applications should show Synced / Healthy
+# All five Applications should show Synced / Healthy
 kubectl get applications -n argocd
 
-# Pods in both app namespaces should be Running
+# Pods in every namespace should be Running
 kubectl get pods -n app
+kubectl get pods -n backend
 kubectl get pods -n monitoring
+kubectl get pods -n gatekeeper-system
 
-# The NetworkPolicy is actually in place
+# The NetworkPolicies are actually in place
 kubectl get networkpolicy -n app
+kubectl get networkpolicy -n backend
+
+# sample-app can actually reach greeter (through the ingress path, same as test.sh)
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8888:80 &
+curl -H "Host: sample-app.local" http://localhost:8888/greeting
+kill %1
 ```
+
+## 2b. Confirm Gatekeeper is actually enforcing something
+
+The best way to see policy-as-code do something is to watch it reject a bad pod. Try creating an
+obviously non-compliant one in the `app` namespace:
+
+```bash
+kubectl run bad-pod -n app --image=nginx:latest --restart=Never \
+  --overrides='{"spec":{"containers":[{"name":"bad-pod","image":"nginx:latest"}]}}'
+```
+
+Expect an admission error mentioning both the missing `runAsNonRoot`/resources and the
+`:latest` tag — Gatekeeper blocked it before it was ever scheduled. The same command against the
+`default` namespace (not covered by the Constraints) would succeed, which is the intended
+scoping — see README for why.
 
 ## 3. Look around the UIs
 
@@ -108,7 +133,9 @@ kubectl get secret -n monitoring kube-prometheus-stack-grafana \
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090
 ```
 
-Open http://localhost:9090/targets — you should see a `sample-app` target with state `UP`.
+Open http://localhost:9090/targets — you should see `sample-app` and `greeter` targets with
+state `UP`. (`greeter` has no ingress of its own — it's internal-only, reached through
+`sample-app`'s `/greeting` endpoint or Prometheus's scrape, both from inside the cluster.)
 
 ## 4. Try the GitOps loop yourself
 

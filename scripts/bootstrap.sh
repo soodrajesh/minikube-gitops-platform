@@ -12,13 +12,15 @@ echo "==> Enabling addons: ingress, metrics-server"
 minikube addons enable ingress --profile "$PROFILE"
 minikube addons enable metrics-server --profile "$PROFILE"
 
-echo "==> Building sample-app image inside minikube's docker daemon"
+echo "==> Building sample-app and greeter images inside minikube's docker daemon"
 eval "$(minikube -p "$PROFILE" docker-env)"
 docker build -t sample-app:local "$(dirname "$0")/../app"
+docker build -t greeter:local "$(dirname "$0")/../greeter"
 
-echo "==> Adding argo + prometheus-community helm repos"
+echo "==> Adding argo, prometheus-community, and gatekeeper helm repos"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null
+helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts >/dev/null
 helm repo update >/dev/null
 
 # kube-prometheus-stack's CRDs are large enough that ArgoCD's client-side apply of
@@ -37,6 +39,13 @@ kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install argocd argo/argo-cd \
   --namespace argocd \
   --set configs.params."server\.insecure"=true \
+  --wait --timeout 5m
+
+echo "==> Installing Gatekeeper"
+helm upgrade --install gatekeeper gatekeeper/gatekeeper \
+  --namespace gatekeeper-system --create-namespace \
+  --set replicas=1 \
+  --set audit.replicas=1 \
   --wait --timeout 5m
 
 echo "==> ArgoCD installed. Initial admin password:"

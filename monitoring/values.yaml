@@ -36,6 +36,17 @@ prometheus:
         - port: http
           path: /metrics
           interval: 15s
+    - name: greeter
+      selector:
+        matchLabels:
+          app: greeter
+      namespaceSelector:
+        matchNames:
+          - backend
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 15s
 
 grafana:
   # No adminPassword set here on purpose: the chart auto-generates a random

@@ -1,9 +1,10 @@
 # minikube-gitops-platform
 
-A local, single-cluster GitOps platform on minikube: ArgoCD manages a sample Flask app and a
-`kube-prometheus-stack` monitoring stack from this repo, using the app-of-apps pattern. It's
-meant as a working demo of enterprise Kubernetes patterns (GitOps, observability, basic pod
-security and network policy) scaled down to run on a laptop, not a production platform.
+A local, single-cluster GitOps platform on minikube: ArgoCD manages two small Flask services and
+a `kube-prometheus-stack` monitoring stack from this repo, using the app-of-apps pattern, with
+Gatekeeper enforcing the security conventions the manifests already follow. It's meant as a
+working demo of enterprise Kubernetes patterns (GitOps, observability, service-to-service traffic,
+policy-as-code) scaled down to run on a laptop, not a production platform.
 
 ## Architecture
 
@@ -12,29 +13,46 @@ graph TD
     Dev["Developer: git push"] --> GH["GitHub repo (public)"]
     GH -->|polled by| ArgoCD["ArgoCD (argocd namespace)"]
     ArgoCD -->|sync, prune, selfHeal| App["sample-app Deployment/Service (app namespace)"]
+    ArgoCD -->|sync| Backend["greeter Deployment/Service (backend namespace)"]
     ArgoCD -->|sync| Monitoring["kube-prometheus-stack (monitoring namespace)"]
+    ArgoCD -->|sync| Policies["Gatekeeper ConstraintTemplates + Constraints"]
     Ingress["ingress-nginx"] -->|routes /| App
     Ingress -->|routes /| Grafana["Grafana"]
+    App -->|GET /greet| Backend
     Prometheus["Prometheus"] -->|scrapes /metrics| App
+    Prometheus -->|scrapes /metrics| Backend
     Prometheus --> Grafana
     NetPol["NetworkPolicy: default-deny + explicit allows"] -.guards.-> App
+    NetPol2["NetworkPolicy: default-deny + allow from app"] -.guards.-> Backend
+    Gatekeeper["Gatekeeper admission webhook"] -.enforces on create/update.-> App
+    Gatekeeper -.enforces on create/update.-> Backend
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
-  `gitops/apps/`, which declares two child Applications: `sample-app` (plain manifests in
-  `gitops/sample-app/`) and `kube-prometheus-stack` (the upstream Helm chart, with
-  `monitoring/values.yaml` from this repo layered on top via ArgoCD's multi-source support).
-  From that point on, `git push` is the only deployment step — ArgoCD polls this repo and
-  reconciles the cluster automatically (`prune: true`, `selfHeal: true`).
-- **sample-app** (`app/`): a small Flask app with `/health`, `/metrics` (Prometheus format via
-  `prometheus_client`), and `/`. Runs as a non-root user, read-only root filesystem, with
-  resource requests/limits and liveness/readiness probes.
+  `gitops/apps/`, which declares four child Applications: `sample-app`, `greeter`,
+  `kube-prometheus-stack` (upstream Helm chart + `monitoring/values.yaml` via multi-source), and
+  `policies` (Gatekeeper ConstraintTemplates/Constraints). From that point on, `git push` is the
+  only deployment step — ArgoCD polls this repo and reconciles the cluster automatically
+  (`prune: true`, `selfHeal: true`).
+- **sample-app** (`app/`): a small Flask app with `/health`, `/metrics`, `/`, and `/greeting`
+  (calls `greeter` over HTTP and returns its response, or a `502` if it's unreachable).
+- **greeter** (`greeter/`): a second small Flask app in its own `backend` namespace, with
+  `/health`, `/metrics`, and `/greet`. Exists purely so there's real service-to-service traffic
+  in the cluster, gated by an actual NetworkPolicy rather than everything living in one flat
+  namespace. Both apps run as non-root, read-only root filesystem, with resource
+  requests/limits and liveness/readiness probes.
 - **Monitoring**: `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager), trimmed to a
-  small footprint for local use, with a `ServiceMonitor` scraping the app's `/metrics`.
+  small footprint for local use, with `ServiceMonitor`s scraping both apps' `/metrics`.
 - **Ingress**: `ingress-nginx` (minikube addon) routes `sample-app.local` to the app and
-  `grafana.local` to Grafana.
-- **Network policy**: default-deny ingress in the `app` namespace, with explicit allows from
-  `ingress-nginx` (for user traffic) and `monitoring` (for Prometheus scraping).
+  `grafana.local` to Grafana. `greeter` has no ingress — it's internal-only.
+- **Network policy**: default-deny ingress in both `app` and `backend` namespaces. `app` allows
+  traffic from `ingress-nginx` (user traffic) and `monitoring` (scraping). `backend` allows
+  traffic only from the `app` namespace and `monitoring` — nothing outside the cluster, and
+  nothing outside `app`, can reach `greeter` directly.
+- **Policy-as-code**: Gatekeeper (`gitops/policies/`) enforces at admission time what the
+  manifests already do by convention — non-root, no privilege escalation, resource
+  requests/limits required, no `:latest` image tags — scoped to the `app` and `backend`
+  namespaces only, so it can't break the upstream charts running elsewhere in the cluster.
 
 ## Prerequisites
 
@@ -48,8 +66,8 @@ git clone https://github.com/soodrajesh/minikube-gitops-platform.git
 cd minikube-gitops-platform
 
 ./scripts/bootstrap.sh   # starts minikube, enables ingress/metrics-server,
-                          # builds the app image into minikube's docker daemon,
-                          # installs ArgoCD via Helm
+                          # builds both app images into minikube's docker daemon,
+                          # installs ArgoCD and Gatekeeper via Helm
 
 ./scripts/deploy.sh      # applies the root Application, waits for everything
                           # to reach Synced + Healthy
@@ -96,37 +114,53 @@ Tear down when done:
 
 ```
 .
-├── app/                        # Flask sample app: /, /health, /metrics
+├── app/                        # Flask sample app: /, /health, /metrics, /greeting -> greeter
 │   ├── app.py
 │   ├── Dockerfile               # non-root user, HEALTHCHECK, gunicorn
+│   ├── requirements.txt
+│   └── tests/test_app.py
+├── greeter/                    # Flask backend app: /health, /metrics, /greet
+│   ├── app.py
+│   ├── Dockerfile
 │   ├── requirements.txt
 │   └── tests/test_app.py
 ├── gitops/
 │   ├── root-app.yaml            # the one Application you apply by hand (app-of-apps root)
 │   ├── apps/
 │   │   ├── sample-app.yaml      # Application CR -> gitops/sample-app/
-│   │   └── monitoring.yaml      # Application CR -> kube-prometheus-stack chart + monitoring/values.yaml
-│   └── sample-app/               # plain k8s manifests for the app
-│       ├── deployment.yaml
-│       ├── service.yaml
-│       ├── ingress.yaml
-│       └── networkpolicy.yaml
+│   │   ├── greeter.yaml         # Application CR -> gitops/greeter/
+│   │   ├── monitoring.yaml      # Application CR -> kube-prometheus-stack chart + monitoring/values.yaml
+│   │   └── policies.yaml        # Application CR -> gitops/policies/
+│   ├── sample-app/               # plain k8s manifests for sample-app
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   ├── ingress.yaml
+│   │   └── networkpolicy.yaml
+│   ├── greeter/                  # plain k8s manifests for greeter
+│   │   ├── deployment.yaml
+│   │   ├── service.yaml
+│   │   └── networkpolicy.yaml
+│   └── policies/                 # Gatekeeper ConstraintTemplates + Constraints
+│       ├── templates/            # sync-wave 0: applied first
+│       └── constraints/          # sync-wave 1: applied after templates' CRDs exist
 ├── monitoring/
-│   └── values.yaml               # kube-prometheus-stack values (lean footprint + app ServiceMonitor)
+│   └── values.yaml               # kube-prometheus-stack values (lean footprint + both apps' ServiceMonitors)
 ├── scripts/
 │   ├── bootstrap.sh
 │   ├── deploy.sh
 │   ├── test.sh
 │   └── teardown.sh
-└── .github/workflows/ci.yml     # pytest, docker build + Trivy scan, kubeconform + yamllint
+└── .github/workflows/ci.yml     # pytest x2, docker build + Trivy scan x2, kubeconform + yamllint
 ```
 
 ## CI
 
-On every PR: run the app's pytest suite, build the Docker image and scan it with Trivy
+On every PR: run both apps' pytest suites, build both Docker images and scan them with Trivy
 (fails on HIGH/CRITICAL fixable vulnerabilities), lint the plain k8s manifests with
-`kubeconform -strict`, and `yamllint` the YAML across the repo. CI does not stand up a cluster —
-it validates the app and the manifests, not a live deployment.
+`kubeconform -strict` (Gatekeeper's custom CRD kinds are checked for valid YAML/structure only,
+since there's no public schema for kubeconform to validate them against), and `yamllint` the
+YAML across the repo. CI does not stand up a cluster — it validates the apps and the manifests,
+not a live deployment.
 
 ## What's missing
 
@@ -138,10 +172,12 @@ This is a single-cluster local demo, not a production platform:
   cert-manager.
 - No secrets management beyond Kubernetes' built-in Secrets (which are base64, not encrypted
   at rest by default). A real deployment would add Sealed Secrets, External Secrets, or Vault.
-- No policy engine (OPA/Gatekeeper) or service mesh (Istio) — deliberately left out to keep the
-  resource footprint small on a 16GB laptop. The security controls that are in place
-  (non-root containers, read-only rootfs, NetworkPolicy, resource limits, Trivy scanning) are
-  real and enforced, just not backed by an admission-control policy engine.
+- No service mesh (Istio/Linkerd) — deliberately left out to keep the resource footprint small
+  on a 16GB laptop. Gatekeeper is included, but scoped to only the `app`/`backend` namespaces —
+  the upstream ArgoCD/monitoring charts running elsewhere aren't policed by it, since they
+  weren't written to these conventions and enforcing it there would break them at admission
+  time. This also means Gatekeeper only catches violations in *new* pods going forward; it
+  doesn't retroactively audit-and-reject what was already running before a constraint was added.
 - CI doesn't spin up a cluster to test the actual ArgoCD sync — it validates manifests
   statically. The full sync path is only exercised by running `scripts/deploy.sh` locally.
 

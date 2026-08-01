@@ -1,6 +1,7 @@
 import os
 import time
 
+import requests
 from flask import Flask, Response
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
@@ -11,6 +12,8 @@ REQUEST_COUNT = Counter(
     "sample_app_requests_total", "Total HTTP requests", ["path"]
 )
 
+GREETER_URL = os.environ.get("GREETER_URL", "http://greeter.backend.svc.cluster.local")
+
 
 @app.route("/")
 def hello():
@@ -19,6 +22,17 @@ def hello():
         "message": "hello from minikube-gitops-platform",
         "pod": os.environ.get("HOSTNAME", "unknown"),
     }
+
+
+@app.route("/greeting")
+def greeting():
+    REQUEST_COUNT.labels(path="/greeting").inc()
+    try:
+        resp = requests.get(f"{GREETER_URL}/greet", timeout=2)
+        resp.raise_for_status()
+        return {"from": "greeter", **resp.json()}
+    except requests.RequestException as exc:
+        return {"error": f"could not reach greeter: {exc}"}, 502
 
 
 @app.route("/health")
