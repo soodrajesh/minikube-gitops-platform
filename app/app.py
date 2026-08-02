@@ -38,7 +38,12 @@ def greeting():
 @app.route("/health")
 def health():
     REQUEST_COUNT.labels(path="/health").inc()
-    return {"status": "ok", "uptime_seconds": round(time.time() - START_TIME, 1)}
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.time() - START_TIME, 1),
+        # Confirms the secret was actually decrypted and mounted -- never the value itself.
+        "api_key_configured": bool(os.environ.get("API_KEY")),
+    }
 
 
 @app.route("/metrics")

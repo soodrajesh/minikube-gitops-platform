@@ -30,6 +30,11 @@ spec:
           env:
             - name: GREETER_URL
               value: http://greeter.backend.svc.cluster.local
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: sample-app-secret
+                  key: api-key
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

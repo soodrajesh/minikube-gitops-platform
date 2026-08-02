@@ -17,11 +17,12 @@ eval "$(minikube -p "$PROFILE" docker-env)"
 docker build -t sample-app:local "$(dirname "$0")/../app"
 docker build -t greeter:local "$(dirname "$0")/../greeter"
 
-echo "==> Adding argo, prometheus-community, gatekeeper, and jetstack helm repos"
+echo "==> Adding argo, prometheus-community, gatekeeper, jetstack, and sealed-secrets helm repos"
 helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null
 helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts >/dev/null
 helm repo add jetstack https://charts.jetstack.io >/dev/null
+helm repo add sealed-secrets https://bitnami.github.io/sealed-secrets >/dev/null
 helm repo update >/dev/null
 
 # kube-prometheus-stack's CRDs are large enough that ArgoCD's client-side apply of
@@ -57,6 +58,28 @@ helm upgrade --install cert-manager jetstack/cert-manager \
   --set webhook.replicaCount=1 \
   --set cainjector.replicaCount=1 \
   --wait --timeout 5m
+
+echo "==> Installing Sealed Secrets"
+# The controller's signing key must survive cluster rebuilds, or every SealedSecret
+# already committed to git becomes permanently undecryptable (sealed against a key
+# that no longer exists). Back it up outside the repo and restore it before the
+# controller starts, so re-running bootstrap.sh after `minikube delete` keeps
+# gitops/sample-app/sealed-secret.yaml valid instead of breaking it.
+SEALED_SECRETS_KEY_BACKUP="${SEALED_SECRETS_KEY_BACKUP:-$HOME/.minikube-gitops-platform/sealed-secrets-key.yaml}"
+mkdir -p "$(dirname "$SEALED_SECRETS_KEY_BACKUP")"
+kubectl create namespace sealed-secrets --dry-run=client -o yaml | kubectl apply -f -
+if [ -f "$SEALED_SECRETS_KEY_BACKUP" ]; then
+  echo "    restoring previously backed-up sealing key from $SEALED_SECRETS_KEY_BACKUP"
+  kubectl apply -f "$SEALED_SECRETS_KEY_BACKUP"
+else
+  echo "    no backed-up sealing key found; controller will generate a new one"
+fi
+helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+  --namespace sealed-secrets \
+  --wait --timeout 5m
+kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml \
+  > "$SEALED_SECRETS_KEY_BACKUP"
+echo "    sealing key backed up to $SEALED_SECRETS_KEY_BACKUP"
 
 echo "==> ArgoCD installed. Initial admin password:"
 kubectl -n argocd get secret argocd-initial-admin-secret \

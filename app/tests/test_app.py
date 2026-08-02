@@ -17,7 +17,10 @@ def test_health():
     client = app.test_client()
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.get_json()["status"] == "ok"
+    body = resp.get_json()
+    assert body["status"] == "ok"
+    # No API_KEY env var in this test environment; must report False, never leak a value.
+    assert body["api_key_configured"] is False
 
 
 def test_metrics():
