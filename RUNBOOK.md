@@ -89,6 +89,10 @@ kubectl get secret -n app sample-app-secret
 # The HPA exists and metrics-server is feeding it real data (not <unknown>)
 kubectl get hpa -n app sample-app
 
+# Gatekeeper's own metrics are being scraped (PodMonitor -> both pods, no dedicated Service)
+kubectl get podmonitor -n gatekeeper-system
+kubectl get configmap gatekeeper-dashboard -n gatekeeper-system
+
 # sample-app can actually reach greeter, over TLS through the ingress path (same as test.sh)
 kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443 &
@@ -172,6 +176,11 @@ Login: `admin` / (fetch the password):
 kubectl get secret -n monitoring kube-prometheus-stack-grafana \
   -o jsonpath="{.data.admin-password}" | base64 -d
 ```
+
+Once logged in, open **Dashboards → Gatekeeper** — active constraints/templates, current audit
+violations, and admission request rate/latency by allow/deny outcome, all from real Prometheus
+queries (`gitops/policies/constraints/grafana-dashboard.yaml`). Trigger the "Denied admission
+requests" panel by re-running the `bad-pod` command from step 2b a few times.
 
 **Prometheus** — raw targets/metrics, confirm the app is being scraped:
 

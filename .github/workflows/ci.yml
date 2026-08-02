@@ -114,7 +114,14 @@ jobs:
           done
 
       - name: Apply Gatekeeper Constraints
-        run: kubectl apply -f gitops/policies/constraints/
+        run: |
+          # Everything in this directory except podmonitor.yaml: that needs the
+          # monitoring.coreos.com PodMonitor CRD, which only exists because
+          # kube-prometheus-stack installs it -- and kube-prometheus-stack itself is
+          # skipped in this job (see the top-of-file comment). Applying it here would
+          # fail with "no matches for kind PodMonitor".
+          kubectl apply -f gitops/policies/constraints/constraints.yaml
+          kubectl apply -f gitops/policies/constraints/grafana-dashboard.yaml
 
       - name: Install cert-manager
         run: |

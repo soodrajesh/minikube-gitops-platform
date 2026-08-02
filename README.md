@@ -29,6 +29,8 @@ graph TD
     SealedSecret["sample-app-secret SealedSecret (ciphertext, safe in git)"] -->|decrypted by controller| Secret["sample-app-secret Secret (plaintext, in-cluster only)"]
     Secret -->|API_KEY env var| App
     HPA["HPA: 2-6 replicas, target 50% CPU"] -.scales.-> App
+    Prometheus -->|scrapes, via PodMonitor| Gatekeeper
+    Gatekeeper -->|constraints, violations, admission metrics| GKDash["Grafana: Gatekeeper dashboard"]
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
@@ -63,6 +65,10 @@ graph TD
   manifests already do by convention — non-root, no privilege escalation, resource
   requests/limits required, no `:latest` image tags — scoped to the `app` and `backend`
   namespaces only, so it can't break the upstream charts running elsewhere in the cluster.
+  A `PodMonitor` scrapes both Gatekeeper pods directly (there's no dedicated metrics Service,
+  only the webhook one) and a Grafana dashboard (`gitops/policies/constraints/grafana-dashboard.yaml`)
+  shows active constraints/templates, current audit violations, and admission request
+  rate/latency by allow/deny outcome — real metrics, not a static count.
 - **Secrets management**: `sealed-secrets` (installed by `bootstrap.sh`, not GitOps-managed —
   same reasoning as ArgoCD/Gatekeeper/cert-manager) lets `gitops/sample-app/sealed-secret.yaml`
   be committed to git as ciphertext, decryptable only by the controller running in this specific
@@ -196,7 +202,9 @@ Tear down when done:
 │   ├── policies/                 # Gatekeeper ConstraintTemplates + Constraints
 │   │   ├── templates/            # synced by the policy-templates Application
 │   │   └── constraints/          # synced by the policy-constraints Application (after
-│   │                              # policy-templates' CRDs exist -- see that Application's comment)
+│   │       │                      # policy-templates' CRDs exist -- see that Application's comment)
+│   │       ├── podmonitor.yaml         # scrapes both Gatekeeper pods directly
+│   │       └── grafana-dashboard.yaml  # constraints, violations, admission request rate/latency
 │   └── tls/                      # cert-manager: local CA bootstrap + issuer
 │       ├── selfsigned-issuer.yaml
 │       ├── ca-certificate.yaml

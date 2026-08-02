@@ -51,6 +51,10 @@ check "Prometheus has an up target for sample-app" bash -c \
   "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"sample-app\" and .health==\"up\")' >/dev/null"
 check "Prometheus has an up target for greeter" bash -c \
   "$CURL http://localhost:9090/api/v1/targets | jq -e '.data.activeTargets[] | select(.labels.job==\"greeter\" and .health==\"up\")' >/dev/null"
+check "Prometheus has up targets for both Gatekeeper pods" bash -c \
+  "[ \"\$($CURL http://localhost:9090/api/v1/targets | jq -r '[.data.activeTargets[] | select(.labels.namespace==\"gatekeeper-system\" and .health==\"up\")] | length')\" = '2' ]"
+check "Gatekeeper's constraint count metric reads 4, not double-counted across pods" bash -c \
+  "[ \"\$($CURL 'http://localhost:9090/api/v1/query?query=max(gatekeeper_constraints%7Bstatus%3D%22active%22%7D)' | jq -r '.data.result[0].value[1]')\" = '4' ]"
 kill "$PROM_PID" 2>/dev/null || true
 
 echo "==> Port-forwarding Grafana to check health"
@@ -63,6 +67,10 @@ kill "$GRAFANA_PID" 2>/dev/null || true
 GRAFANA_HTTPS_CURL="$CURL --cacert $CA_CERT --resolve grafana.local:8443:127.0.0.1"
 check "Grafana /api/health returns 200 over TLS through ingress, verified against the local CA" bash -c \
   "[ \"\$($GRAFANA_HTTPS_CURL -o /dev/null -w '%{http_code}' https://grafana.local:8443/api/health)\" = '200' ]"
+
+GRAFANA_PW="$(kubectl get secret -n monitoring kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d)"
+check "Gatekeeper dashboard is provisioned in Grafana" bash -c \
+  "$GRAFANA_HTTPS_CURL -u admin:$GRAFANA_PW https://grafana.local:8443/api/dashboards/uid/gatekeeper-overview | jq -e '.dashboard.uid == \"gatekeeper-overview\"' >/dev/null"
 
 check "default-deny NetworkPolicy exists in app namespace" bash -c \
   "kubectl get networkpolicy -n app default-deny-ingress >/dev/null 2>&1"
