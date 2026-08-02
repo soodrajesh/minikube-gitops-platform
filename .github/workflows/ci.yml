@@ -52,3 +52,81 @@ jobs:
         run: |
           pip install yamllint
           yamllint -d "{extends: default, rules: {line-length: disable}}" gitops monitoring .github
+
+  # Stands up a real (if scaled-down) cluster and applies the actual manifests from this repo,
+  # instead of only linting them statically. Deliberately narrower than what scripts/deploy.sh
+  # does locally:
+  #   - Applies gitops/sample-app, gitops/greeter, and gitops/policies directly via `kubectl
+  #     apply`, not through ArgoCD. Getting a running ArgoCD to sync against this exact PR's
+  #     commit (rather than the `main` branch every Application here points at) needs either a
+  #     throwaway git remote or rewriting every source.targetRevision at runtime -- both add
+  #     real complexity for a CI job. This still catches manifest bugs (bad selectors, missing
+  #     probes, Gatekeeper ordering issues) -- it just doesn't exercise ArgoCD's sync mechanics.
+  #   - Skips kube-prometheus-stack entirely: too heavy for a GitHub-hosted runner (2 CPU / 7GB
+  #     shared with the OS), and the bugs it's caught locally (CRD-too-large, ServiceMonitor
+  #     value path) are chart/values problems, not problems with this repo's own manifests.
+  #   - Skips ingress-nginx: reaches the app via `kubectl port-forward` to the Service directly.
+  #     Kind needs extra port-mapping config to expose ingress, which isn't worth it just to
+  #     re-prove kubectl can port-forward.
+  # See RUNBOOK.md and README.md "What's missing" for the full list of what this does and
+  # doesn't cover, and run `scripts/deploy.sh` + `scripts/test.sh` locally for the full picture.
+  e2e-smoke-test:
+    runs-on: ubuntu-latest
+    needs: [test-app, lint-manifests]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: ci
+
+      - name: Build and load images into kind
+        run: |
+          docker build -t sample-app:local ./app
+          docker build -t greeter:local ./greeter
+          kind load docker-image sample-app:local --name ci
+          kind load docker-image greeter:local --name ci
+
+      - name: Install Gatekeeper
+        run: |
+          helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts
+          helm repo update
+          helm upgrade --install gatekeeper gatekeeper/gatekeeper \
+            --namespace gatekeeper-system --create-namespace \
+            --set replicas=1 --set audit.replicas=1 \
+            --wait --timeout 5m
+
+      - name: Apply Gatekeeper ConstraintTemplates and wait for their CRDs
+        run: |
+          kubectl apply -f gitops/policies/templates/
+          for k in k8srequirenonroot k8sdisallowprivilegeescalation k8srequireresources k8sdisallowlatesttag; do
+            echo "waiting for CRD ${k}.constraints.gatekeeper.sh"
+            until kubectl get crd "${k}.constraints.gatekeeper.sh" >/dev/null 2>&1; do sleep 2; done
+          done
+
+      - name: Apply Gatekeeper Constraints
+        run: kubectl apply -f gitops/policies/constraints/
+
+      - name: Apply sample-app and greeter
+        run: |
+          kubectl apply -f gitops/sample-app/
+          kubectl apply -f gitops/greeter/
+          kubectl rollout status deployment/sample-app -n app --timeout=120s
+          kubectl rollout status deployment/greeter -n backend --timeout=120s
+
+      - name: Smoke test the deployed app
+        run: |
+          kubectl -n app port-forward svc/sample-app 8080:80 &
+          PF_PID=$!
+          sleep 3
+          curl -sf --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8080/health
+          echo
+          curl -sf --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8080/greeting | grep -q greeting
+          kill "$PF_PID"
+
+      - name: Verify Gatekeeper actually blocks a non-compliant pod
+        run: |
+          if kubectl run bad-pod -n app --image=nginx:latest --restart=Never --dry-run=server; then
+            echo "expected Gatekeeper to reject this pod, but it was allowed" >&2
+            exit 1
+          fi
