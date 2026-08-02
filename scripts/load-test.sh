@@ -10,7 +10,7 @@ echo "==> Starting HPA and current replica count"
 kubectl get hpa -n app sample-app
 kubectl get pods -n app -l app=sample-app --no-headers | wc -l | xargs echo "current replicas:"
 
-echo "==> Launching load-generating Job ($DURATION seconds, 4 parallel workers)"
+echo "==> Launching load-generating Job ($DURATION seconds, 8 pods x 16 concurrent connections each)"
 kubectl delete job "$JOB_NAME" -n app --ignore-not-found >/dev/null 2>&1
 kubectl apply -f - <<EOF
 apiVersion: batch/v1
@@ -19,7 +19,7 @@ metadata:
   name: $JOB_NAME
   namespace: app
 spec:
-  parallelism: 4
+  parallelism: 8
   backoffLimit: 0
   activeDeadlineSeconds: $((DURATION + 30))
   template:
@@ -28,14 +28,31 @@ spec:
       containers:
         - name: load
           image: curlimages/curl:8.10.1
+          # Gatekeeper's constraints (gitops/policies/) apply to every Pod in the app
+          # namespace, this Job included -- without these it gets rejected at admission.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 100m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 64Mi
           command:
             - sh
             - -c
             - |
               end=\$(( \$(date +%s) + $DURATION ))
-              while [ \$(date +%s) -lt \$end ]; do
-                curl -s -o /dev/null http://sample-app.app.svc.cluster.local/
-              done
+              worker() {
+                while [ \$(date +%s) -lt \$end ]; do
+                  curl -s -o /dev/null http://sample-app.app.svc.cluster.local/
+                done
+              }
+              for i in \$(seq 1 16); do worker & done
+              wait
 EOF
 
 echo "==> Watching HPA for $((DURATION + 30))s (Ctrl-C to stop watching; the Job keeps running)"

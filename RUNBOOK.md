@@ -86,6 +86,9 @@ kubectl get certificate -n monitoring
 kubectl get sealedsecret -n app sample-app-secret
 kubectl get secret -n app sample-app-secret
 
+# The HPA exists and metrics-server is feeding it real data (not <unknown>)
+kubectl get hpa -n app sample-app
+
 # sample-app can actually reach greeter, over TLS through the ingress path (same as test.sh)
 kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443 &
@@ -109,6 +112,22 @@ Expect an admission error mentioning both the missing `runAsNonRoot`/resources a
 `:latest` tag — Gatekeeper blocked it before it was ever scheduled. The same command against the
 `default` namespace (not covered by the Constraints) would succeed, which is the intended
 scoping — see README for why.
+
+## 2c. Watch the HPA actually scale sample-app
+
+```bash
+./scripts/load-test.sh 90
+```
+
+Runs a Kubernetes Job inside the cluster (8 pods x 16 concurrent connections each) against
+`sample-app` directly — not through ingress/port-forward, so it isn't bottlenecked by your
+laptop's network stack — for 90 seconds, and streams `kubectl get hpa -w` output while it runs.
+Expect `REPLICAS` to climb from 2 toward the max of 6 within the first minute. It cleans up the
+Job automatically at the end.
+
+Scale-down afterward is slower than you might expect (`stabilizationWindowSeconds: 60`, plus
+`sample-app`'s CPU *request* is sized a bit low relative to its actual idle baseline — see
+"What's missing" in README.md). Watch it settle with `kubectl get hpa -n app -w`.
 
 ## 3. Look around the UIs
 

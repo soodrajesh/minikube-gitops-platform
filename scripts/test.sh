@@ -73,6 +73,11 @@ check "default-deny NetworkPolicy exists in backend namespace" bash -c \
 check "Gatekeeper blocks a non-compliant pod in the app namespace" bash -c \
   "! kubectl run gatekeeper-smoke-test -n app --image=nginx:latest --restart=Never --dry-run=server >/dev/null 2>&1"
 
+check "sample-app's HPA is computing a real CPU metric (not <unknown>)" bash -c \
+  "kubectl get hpa -n app sample-app -o jsonpath='{.status.currentMetrics}' | grep -q averageUtilization"
+echo "    (this only checks the HPA object and metrics-server are wired up correctly --"
+echo "     for an actual scale-up under load, run ./scripts/load-test.sh)"
+
 if [ "$FAIL" -ne 0 ]; then
   echo "==> One or more checks FAILED"
   exit 1

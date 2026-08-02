@@ -73,6 +73,10 @@ jobs:
   #     re-prove kubectl can port-forward. cert-manager's Certificate for sample-app still gets
   #     issued and checked here regardless -- ingress-shim doesn't need a working ingress
   #     controller to react to the Ingress's cert-manager.io/cluster-issuer annotation.
+  #   - The HPA in gitops/sample-app/hpa.yaml applies cleanly (the autoscaling/v2 API is core
+  #     Kubernetes, always present) but its metric stays <unknown> here: kind doesn't ship
+  #     metrics-server and this job doesn't install one. Real autoscaling is only exercised by
+  #     scripts/load-test.sh against the local minikube cluster.
   # See RUNBOOK.md and README.md "What's missing" for the full list of what this does and
   # doesn't cover, and run `scripts/deploy.sh` + `scripts/test.sh` locally for the full picture.
   e2e-smoke-test:
@@ -160,6 +164,9 @@ jobs:
           # annotation regardless of which ingress controller is installed, so this issues
           # even though ingress-nginx itself isn't set up in this CI environment.
           kubectl wait --for=condition=Ready certificate/sample-app-tls -n app --timeout=60s
+          # Confirms the HPA object itself is well-formed and accepted by the API server; its
+          # metric stays <unknown> here since kind has no metrics-server (see the job's comment).
+          kubectl get hpa -n app sample-app
 
       - name: Smoke test the deployed app
         run: |

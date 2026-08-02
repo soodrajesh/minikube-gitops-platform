@@ -28,6 +28,7 @@ graph TD
     Gatekeeper -.enforces on create/update.-> Backend
     SealedSecret["sample-app-secret SealedSecret (ciphertext, safe in git)"] -->|decrypted by controller| Secret["sample-app-secret Secret (plaintext, in-cluster only)"]
     Secret -->|API_KEY env var| App
+    HPA["HPA: 2-6 replicas, target 50% CPU"] -.scales.-> App
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
@@ -70,6 +71,12 @@ graph TD
   decrypted and wired up correctly, not just declared. See `scripts/reseal-demo-secret.sh` and
   the "Rotate or re-seal" section below for the operational catch: the sealing key must survive
   cluster rebuilds or every committed SealedSecret becomes permanently undecryptable.
+- **Autoscaling**: a `HorizontalPodAutoscaler` (`gitops/sample-app/hpa.yaml`) keeps `sample-app`
+  between 2 and 6 replicas, targeting 50% CPU utilization via `metrics-server` (a minikube
+  addon). `gitops/apps/sample-app.yaml` sets `ignoreDifferences` on `spec.replicas` — without it,
+  ArgoCD's `selfHeal` fights the HPA and resets replicas back to the git-declared value every
+  reconcile, silently undoing every scale-up. `scripts/load-test.sh` generates real load
+  in-cluster and watches it actually scale.
 
 ## Prerequisites
 
@@ -95,7 +102,13 @@ cd minikube-gitops-platform
                           # (verified against the local CA), check the
                           # Prometheus target is up, check Grafana health over
                           # TLS too, confirm the NetworkPolicies are applied,
-                          # confirm Gatekeeper blocks a non-compliant pod
+                          # confirm Gatekeeper blocks a non-compliant pod,
+                          # confirm the HPA has a real metric
+
+./scripts/load-test.sh   # generates real load in-cluster and watches the
+                          # HPA actually scale sample-app up (optional --
+                          # not part of the standard test.sh checks, takes
+                          # ~2 minutes)
 ```
 
 On macOS/Windows with the Docker driver, `minikube ip` isn't directly routable from the host, so
@@ -174,6 +187,7 @@ Tear down when done:
 │   │   ├── service.yaml
 │   │   ├── ingress.yaml           # TLS via cert-manager.io/cluster-issuer annotation
 │   │   ├── networkpolicy.yaml
+│   │   ├── hpa.yaml                # 2-6 replicas, target 50% CPU
 │   │   └── sealed-secret.yaml     # ciphertext, safe to commit -- see scripts/reseal-demo-secret.sh
 │   ├── greeter/                  # plain k8s manifests for greeter
 │   │   ├── deployment.yaml
@@ -195,7 +209,8 @@ Tear down when done:
 │   ├── deploy.sh
 │   ├── test.sh
 │   ├── teardown.sh
-│   └── reseal-demo-secret.sh     # regenerate gitops/sample-app/sealed-secret.yaml
+│   ├── reseal-demo-secret.sh     # regenerate gitops/sample-app/sealed-secret.yaml
+│   └── load-test.sh              # generate load in-cluster, watch the HPA scale
 └── .github/workflows/ci.yml     # pytest x2, docker build + Trivy scan x2, kubeconform + yamllint,
                                    # e2e-smoke-test (kind cluster)
 ```
@@ -219,9 +234,12 @@ infrastructure than is worth it for a CI job), skips `kube-prometheus-stack`/`in
 entirely to stay within a GitHub-hosted runner's resources, and creates the demo Secret directly
 rather than relying on the committed `sealed-secret.yaml` (which is sealed against the
 maintainer's own cluster and, by design, can never decrypt anywhere else — see the job's comments
-for why that's expected, not a bug). See `.github/workflows/ci.yml` for the full reasoning. The
-ArgoCD sync path and the full monitoring stack are only exercised by running `scripts/deploy.sh`
-and `scripts/test.sh` locally.
+for why that's expected, not a bug). The HPA applies cleanly in CI too, but `kind` doesn't ship
+`metrics-server` by default and CI doesn't install one, so its metric stays `<unknown>` there —
+actual autoscaling is only exercised by `scripts/load-test.sh` against the local minikube
+cluster. See `.github/workflows/ci.yml` for the full reasoning. The ArgoCD sync path and the
+full monitoring stack are only exercised by running `scripts/deploy.sh` and `scripts/test.sh`
+locally.
 
 ## What's missing
 
@@ -249,5 +267,12 @@ This is a single-cluster local demo, not a production platform:
   ArgoCD or minikube — it doesn't test the actual GitOps sync path (app-of-apps discovery, the
   ServerSideApply/CRD ordering issues documented in RUNBOOK.md, `kube-prometheus-stack`). Those
   are only exercised by running `scripts/deploy.sh` and `scripts/test.sh` locally.
+- `sample-app`'s CPU request (50m) is sized too low relative to its actual idle baseline
+  (gunicorn + Flask + `prometheus_client` overhead, plus liveness/readiness probes and
+  Prometheus scraping every ~10-15s) — running `scripts/load-test.sh` showed the HPA metric
+  hovering near or above the 50% target even shortly after load stops, so scale-down is slower
+  than you'd expect from the `stabilizationWindowSeconds: 60` alone. Sizing requests from real
+  idle measurements (`kubectl top pods`) rather than a round-number guess would fix this; left
+  as-is here because it's a realistic thing to hit and worth seeing, not because it's correct.
 
 See [SECURITY.md](SECURITY.md) for the full list of what's implemented vs. aspirational.
