@@ -1,0 +1,106 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gatekeeper-dashboard
+  namespace: gatekeeper-system
+  labels:
+    grafana_dashboard: "1"
+data:
+  gatekeeper.json: |
+    {
+      "title": "Gatekeeper",
+      "uid": "gatekeeper-overview",
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "30s",
+      "time": { "from": "now-6h", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Active constraints",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(gatekeeper_constraints{status=\"active\"})", "legendFormat": "constraints" }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Active constraint templates",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "targets": [
+            { "expr": "sum(gatekeeper_constraint_templates{status=\"active\"})", "legendFormat": "templates" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Current violations (audit)",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            }
+          },
+          "targets": [
+            { "expr": "sum(gatekeeper_violations{enforcement_action=\"deny\"})", "legendFormat": "violations" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Last audit run duration",
+          "type": "stat",
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "gatekeeper_audit_duration_seconds_sum / gatekeeper_audit_duration_seconds_count",
+              "legendFormat": "avg duration"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Admission requests by outcome",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "targets": [
+            {
+              "expr": "sum by (admission_status) (rate(gatekeeper_validation_request_count_total{admission_dryrun=\"false\"}[5m]))",
+              "legendFormat": "{{admission_status}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Admission request duration (p99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "fieldConfig": { "defaults": { "unit": "s" } },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(gatekeeper_validation_request_duration_seconds_bucket[5m])))",
+              "legendFormat": "p99"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Denied admission requests (cumulative)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
+          "targets": [
+            {
+              "expr": "gatekeeper_validation_request_count_total{admission_dryrun=\"false\", admission_status=\"deny\"}",
+              "legendFormat": "denied requests"
+            }
+          ]
+        }
+      ]
+    }

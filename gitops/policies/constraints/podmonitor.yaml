@@ -1,0 +1,17 @@
+# Gatekeeper has no dedicated metrics Service (only gatekeeper-webhook-service, for the
+# admission webhook itself), so a PodMonitor is used instead of a ServiceMonitor -- it
+# selects the controller-manager and audit pods directly by label and scrapes their
+# `metrics` container port (8888).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gatekeeper
+  namespace: gatekeeper-system
+spec:
+  selector:
+    matchLabels:
+      gatekeeper.sh/system: "yes"
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
