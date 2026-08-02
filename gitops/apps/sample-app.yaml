@@ -12,6 +12,15 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: app
+  # Without this, selfHeal fights the HPA: ArgoCD sees the live replica count drift from
+  # the Deployment's git-declared spec.replicas (the HPA changed it) and resets it back down,
+  # undoing every scale-up. This is ArgoCD's documented way to hand that field to the HPA.
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      name: sample-app
+      jsonPointers:
+        - /spec/replicas
   syncPolicy:
     automated:
       prune: true
