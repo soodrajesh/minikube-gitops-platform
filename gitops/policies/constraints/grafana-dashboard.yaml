@@ -21,7 +21,7 @@ data:
           "type": "stat",
           "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
           "targets": [
-            { "expr": "sum(gatekeeper_constraints{status=\"active\"})", "legendFormat": "constraints" }
+            { "expr": "max(gatekeeper_constraints{status=\"active\"})", "legendFormat": "constraints" }
           ]
         },
         {
@@ -30,7 +30,7 @@ data:
           "type": "stat",
           "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
           "targets": [
-            { "expr": "sum(gatekeeper_constraint_templates{status=\"active\"})", "legendFormat": "templates" }
+            { "expr": "max(gatekeeper_constraint_templates{status=\"active\"})", "legendFormat": "templates" }
           ]
         },
         {
@@ -49,7 +49,7 @@ data:
             }
           },
           "targets": [
-            { "expr": "sum(gatekeeper_violations{enforcement_action=\"deny\"})", "legendFormat": "violations" }
+            { "expr": "max(gatekeeper_violations{enforcement_action=\"deny\"})", "legendFormat": "violations" }
           ]
         },
         {
@@ -60,7 +60,7 @@ data:
           "fieldConfig": { "defaults": { "unit": "s" } },
           "targets": [
             {
-              "expr": "gatekeeper_audit_duration_seconds_sum / gatekeeper_audit_duration_seconds_count",
+              "expr": "sum(gatekeeper_audit_duration_seconds_sum) / sum(gatekeeper_audit_duration_seconds_count)",
               "legendFormat": "avg duration"
             }
           ]
@@ -97,7 +97,7 @@ data:
           "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 },
           "targets": [
             {
-              "expr": "gatekeeper_validation_request_count_total{admission_dryrun=\"false\", admission_status=\"deny\"}",
+              "expr": "sum(gatekeeper_validation_request_count_total{admission_dryrun=\"false\", admission_status=\"deny\"})",
               "legendFormat": "denied requests"
             }
           ]
