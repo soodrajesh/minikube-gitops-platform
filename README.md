@@ -29,12 +29,12 @@ graph TD
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
-  `gitops/apps/`, which declares five child Applications: `sample-app`, `greeter`,
-  `kube-prometheus-stack` (upstream Helm chart + `monitoring/values.yaml` via multi-source), and
-  `policy-templates` + `policy-constraints` (Gatekeeper, split into two Applications on purpose —
-  see the comment in `gitops/apps/policy-constraints.yaml` for why). From that point on,
-  `git push` is the only deployment step — ArgoCD polls this repo and reconciles the cluster
-  automatically
+  `gitops/apps/`, which declares six child Applications: `sample-app`, `greeter`,
+  `kube-prometheus-stack` (upstream Helm chart + `monitoring/values.yaml` via multi-source),
+  `tls` (cert-manager's ClusterIssuers + local CA), and `policy-templates` + `policy-constraints`
+  (Gatekeeper, split into two Applications on purpose — see the comment in
+  `gitops/apps/policy-constraints.yaml` for why). From that point on, `git push` is the only
+  deployment step — ArgoCD polls this repo and reconciles the cluster automatically
   (`prune: true`, `selfHeal: true`).
 - **sample-app** (`app/`): a small Flask app with `/health`, `/metrics`, `/`, and `/greeting`
   (calls `greeter` over HTTP and returns its response, or a `502` if it's unreachable).
@@ -45,8 +45,13 @@ graph TD
   requests/limits and liveness/readiness probes.
 - **Monitoring**: `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager), trimmed to a
   small footprint for local use, with `ServiceMonitor`s scraping both apps' `/metrics`.
-- **Ingress**: `ingress-nginx` (minikube addon) routes `sample-app.local` to the app and
-  `grafana.local` to Grafana. `greeter` has no ingress — it's internal-only.
+- **Ingress + TLS**: `ingress-nginx` (minikube addon) routes `sample-app.local` to the app and
+  `grafana.local` to Grafana, both over real TLS. `cert-manager` (`gitops/tls/`) bootstraps a
+  local CA (`selfsigned-issuer` → `local-ca` Certificate → `ca-issuer` ClusterIssuer) and issues
+  a leaf certificate per host via the `cert-manager.io/cluster-issuer` annotation on each
+  Ingress. It's a real cert chain — `curl --cacert` against the CA cert verifies clean — just not
+  a publicly-trusted one, so browsers will still warn unless you import it. `greeter` has no
+  ingress — it's internal-only.
 - **Network policy**: default-deny ingress in both `app` and `backend` namespaces. `app` allows
   traffic from `ingress-nginx` (user traffic) and `monitoring` (scraping). `backend` allows
   traffic only from the `app` namespace and `monitoring` — nothing outside the cluster, and
@@ -69,28 +74,34 @@ cd minikube-gitops-platform
 
 ./scripts/bootstrap.sh   # starts minikube, enables ingress/metrics-server,
                           # builds both app images into minikube's docker daemon,
-                          # installs ArgoCD and Gatekeeper via Helm
+                          # installs ArgoCD, Gatekeeper, and cert-manager via Helm
 
 ./scripts/deploy.sh      # applies the root Application, waits for everything
                           # to reach Synced + Healthy
 
-./scripts/test.sh        # smoke tests: curl the app through ingress, check
-                          # the Prometheus target is up, check Grafana health,
-                          # confirm the NetworkPolicy is applied
+./scripts/test.sh        # smoke tests: curl the app through ingress over TLS
+                          # (verified against the local CA), check the
+                          # Prometheus target is up, check Grafana health over
+                          # TLS too, confirm the NetworkPolicies are applied,
+                          # confirm Gatekeeper blocks a non-compliant pod
 ```
 
 On macOS/Windows with the Docker driver, `minikube ip` isn't directly routable from the host, so
 `scripts/test.sh` reaches the app and Grafana through `kubectl port-forward svc/ingress-nginx-controller`
-instead. To browse interactively yourself:
+instead. To browse interactively yourself (ingress now redirects plain HTTP to HTTPS, so this
+needs the CA cert to verify clean):
 
 ```bash
-kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8888:80
-curl -H "Host: sample-app.local" http://localhost:8888/
+kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/
 ```
 
 (On Linux with the Docker driver, or any OS with the `--driver=none`/`hyperkit`/`kvm2` drivers,
 `minikube ip` is directly routable and you can add it to `/etc/hosts` instead:
-`<minikube ip>  sample-app.local grafana.local`.)
+`<minikube ip>  sample-app.local grafana.local`, then `curl --cacert /tmp/local-ca.crt
+https://sample-app.local/`. To browse in an actual browser without a cert warning, import
+`/tmp/local-ca.crt` into your OS/browser trust store as a CA.)
 
 Grafana's admin password is auto-generated by the Helm chart, not hardcoded:
 
@@ -132,29 +143,36 @@ Tear down when done:
 │   │   ├── sample-app.yaml      # Application CR -> gitops/sample-app/
 │   │   ├── greeter.yaml         # Application CR -> gitops/greeter/
 │   │   ├── monitoring.yaml      # Application CR -> kube-prometheus-stack chart + monitoring/values.yaml
+│   │   ├── tls.yaml              # Application CR -> gitops/tls/
 │   │   ├── policy-templates.yaml    # Application CR -> gitops/policies/templates/
 │   │   └── policy-constraints.yaml  # Application CR -> gitops/policies/constraints/
 │   ├── sample-app/               # plain k8s manifests for sample-app
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
-│   │   ├── ingress.yaml
+│   │   ├── ingress.yaml           # TLS via cert-manager.io/cluster-issuer annotation
 │   │   └── networkpolicy.yaml
 │   ├── greeter/                  # plain k8s manifests for greeter
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
 │   │   └── networkpolicy.yaml
-│   └── policies/                 # Gatekeeper ConstraintTemplates + Constraints
-│       ├── templates/            # synced by the policy-templates Application
-│       └── constraints/          # synced by the policy-constraints Application (after
-│                                  # policy-templates' CRDs exist -- see that Application's comment)
+│   ├── policies/                 # Gatekeeper ConstraintTemplates + Constraints
+│   │   ├── templates/            # synced by the policy-templates Application
+│   │   └── constraints/          # synced by the policy-constraints Application (after
+│   │                              # policy-templates' CRDs exist -- see that Application's comment)
+│   └── tls/                      # cert-manager: local CA bootstrap + issuer
+│       ├── selfsigned-issuer.yaml
+│       ├── ca-certificate.yaml
+│       └── ca-issuer.yaml
 ├── monitoring/
-│   └── values.yaml               # kube-prometheus-stack values (lean footprint + both apps' ServiceMonitors)
+│   └── values.yaml               # kube-prometheus-stack values (lean footprint, both apps'
+│                                  # ServiceMonitors, Grafana ingress TLS)
 ├── scripts/
 │   ├── bootstrap.sh
 │   ├── deploy.sh
 │   ├── test.sh
 │   └── teardown.sh
-└── .github/workflows/ci.yml     # pytest x2, docker build + Trivy scan x2, kubeconform + yamllint
+└── .github/workflows/ci.yml     # pytest x2, docker build + Trivy scan x2, kubeconform + yamllint,
+                                   # e2e-smoke-test (kind cluster)
 ```
 
 ## CI
@@ -183,8 +201,11 @@ This is a single-cluster local demo, not a production platform:
 
 - No multi-cluster / dev-staging-prod separation — "environment" here is just this one
   minikube cluster.
-- No real TLS or DNS — ingress hosts are `*.local` names resolved via `/etc/hosts`, no
-  cert-manager.
+- No real DNS or publicly-trusted TLS — ingress hosts are `*.local` names resolved via
+  `/etc/hosts`, and cert-manager's CA is self-signed locally (see the Architecture section
+  above), not from a real certificate authority. cert-manager itself and the cert chain it
+  issues are real, working machinery — just not backed by a CA anyone outside this cluster
+  would trust.
 - No secrets management beyond Kubernetes' built-in Secrets (which are base64, not encrypted
   at rest by default). A real deployment would add Sealed Secrets, External Secrets, or Vault.
 - No service mesh (Istio/Linkerd) — deliberately left out to keep the resource footprint small

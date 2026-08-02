@@ -28,8 +28,8 @@ What this does, in order: starts minikube (4 CPU / 6GB by default — override w
 `MINIKUBE_CPUS`/`MINIKUBE_MEMORY` env vars), enables the `ingress` and `metrics-server` addons,
 builds both apps' Docker images directly into minikube's Docker daemon, installs the
 prometheus-operator CRDs via `kubectl apply --server-side` (see "Why server-side apply" in
-SECURITY.md/README if curious why that's a separate step), then installs ArgoCD and Gatekeeper
-via Helm.
+SECURITY.md/README if curious why that's a separate step), then installs ArgoCD, Gatekeeper, and
+cert-manager via Helm.
 
 At the end it prints ArgoCD's admin password. If you need it again later:
 
@@ -43,7 +43,7 @@ Then apply the GitOps root Application and wait for ArgoCD to sync everything:
 ./scripts/deploy.sh
 ```
 
-This should end with a table showing `sample-app`, `greeter`, `kube-prometheus-stack`,
+This should end with a table showing `sample-app`, `greeter`, `kube-prometheus-stack`, `tls`,
 `policy-templates`, `policy-constraints`, and `root-app` all `Synced` / `Healthy`. Note:
 `policy-constraints` may show a transient `SyncFailed`/`OutOfSync` on the very first deploy —
 it needs `policy-templates`' CRDs to exist first, and ArgoCD's automated `selfHeal` retries it
@@ -61,7 +61,7 @@ Automated version (does everything below for you, with real pass/fail output):
 If you want to check things by hand instead:
 
 ```bash
-# All five Applications should show Synced / Healthy
+# All seven Applications should show Synced / Healthy
 kubectl get applications -n argocd
 
 # Pods in every namespace should be Running
@@ -69,14 +69,20 @@ kubectl get pods -n app
 kubectl get pods -n backend
 kubectl get pods -n monitoring
 kubectl get pods -n gatekeeper-system
+kubectl get pods -n cert-manager
 
 # The NetworkPolicies are actually in place
 kubectl get networkpolicy -n app
 kubectl get networkpolicy -n backend
 
-# sample-app can actually reach greeter (through the ingress path, same as test.sh)
-kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8888:80 &
-curl -H "Host: sample-app.local" http://localhost:8888/greeting
+# Both leaf certificates issued and Ready
+kubectl get certificate -n app
+kubectl get certificate -n monitoring
+
+# sample-app can actually reach greeter, over TLS through the ingress path (same as test.sh)
+kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443 &
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/greeting
 kill %1
 ```
 
@@ -97,14 +103,16 @@ scoping — see README for why.
 
 ## 3. Look around the UIs
 
-**The app itself** (through the same ingress path `test.sh` uses):
+**The app itself** (through the same ingress path `test.sh` uses — TLS, verified against the
+local CA; plain HTTP redirects to HTTPS now that a cert is configured):
 
 ```bash
-kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8888:80
+kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443
 # in another terminal:
-curl -H "Host: sample-app.local" http://localhost:8888/
-curl -H "Host: sample-app.local" http://localhost:8888/health
-curl -H "Host: sample-app.local" http://localhost:8888/metrics
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/health
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/metrics
 ```
 
 **ArgoCD UI** — see the app-of-apps tree, sync history, live diffs:
@@ -117,13 +125,20 @@ Open http://localhost:8080 (`bootstrap.sh` installs ArgoCD with `server.insecure
 plain HTTP here — port 443 on the Service is TLS-terminated by the same insecure backend and
 won't complete a TLS handshake, so use port 80). Login: `admin` / the password from step 1.
 
-**Grafana** — dashboards, the sample app's metrics:
+**Grafana** — dashboards, the sample app's metrics. Two ways in: direct to the Service (plain
+HTTP, bypasses ingress/TLS entirely), or through the ingress over TLS like `sample-app`:
 
 ```bash
+# direct to Service:
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+# open http://localhost:3000
+
+# or through ingress, over TLS:
+kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443
+curl --cacert /tmp/local-ca.crt --resolve grafana.local:8443:127.0.0.1 https://grafana.local:8443/api/health
 ```
 
-Open http://localhost:3000. Login: `admin` / (fetch the password):
+Login: `admin` / (fetch the password):
 
 ```bash
 kubectl get secret -n monitoring kube-prometheus-stack-grafana \
@@ -206,6 +221,18 @@ creation). Fix: `minikube delete` then `./scripts/bootstrap.sh` again.
 
 **`curl` to `minikube ip` hangs forever** — expected on macOS/Windows with the Docker driver;
 that IP isn't routable from the host. Use the `kubectl port-forward` approach in step 3 instead.
+
+**`curl: (60) SSL certificate problem` against `sample-app.local`/`grafana.local`** — you're not
+passing `--cacert /tmp/local-ca.crt`, or that file is stale/missing. Re-fetch it:
+`kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d >
+/tmp/local-ca.crt`. If it still fails, check the Certificate is actually `Ready`:
+`kubectl get certificate -n app sample-app-tls` (or `-n monitoring grafana-tls`) — if it's stuck
+`False`, check `kubectl describe certificate` and `kubectl get pods -n cert-manager` for a
+crashing `cert-manager`/`cert-manager-webhook` pod.
+
+**`curl` to a `*.local` host over plain HTTP hangs or returns a redirect you didn't expect** —
+expected: `ingress-nginx` redirects HTTP → HTTPS by default once TLS is configured on an Ingress.
+Use `https://` and `--cacert` as shown above, not `http://`.
 
 **An Application shows `Unknown` sync status with a `ComparisonError` mentioning a CRD kind**
 (e.g. `unable to resolve parseableType for ... Kind=Alertmanager`) — ArgoCD's cached API schema
