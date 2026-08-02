@@ -163,8 +163,19 @@ On every PR: run both apps' pytest suites, build both Docker images and scan the
 (fails on HIGH/CRITICAL fixable vulnerabilities), lint the plain k8s manifests with
 `kubeconform -strict` (Gatekeeper's custom CRD kinds are checked for valid YAML/structure only,
 since there's no public schema for kubeconform to validate them against), and `yamllint` the
-YAML across the repo. CI does not stand up a cluster — it validates the apps and the manifests,
-not a live deployment.
+YAML across the repo.
+
+CI also stands up a real (scaled-down) cluster: the `e2e-smoke-test` job creates a `kind`
+cluster, installs Gatekeeper, applies `gitops/sample-app`, `gitops/greeter`, and
+`gitops/policies` directly via `kubectl apply`, then verifies the app actually serves traffic,
+successfully calls `greeter` across namespaces, and that Gatekeeper actually rejects a
+non-compliant pod. This is deliberately narrower than what `scripts/deploy.sh` does locally — it
+applies manifests directly rather than through ArgoCD (getting ArgoCD to sync against a PR's
+exact commit rather than `main` needs more infrastructure than is worth it for a CI job), and it
+skips `kube-prometheus-stack`/`ingress-nginx` entirely to stay within a GitHub-hosted runner's
+resources. See the job's comments in `.github/workflows/ci.yml` for the full reasoning. The
+ArgoCD sync path and the full monitoring stack are only exercised by running `scripts/deploy.sh`
+and `scripts/test.sh` locally.
 
 ## What's missing
 
@@ -182,7 +193,9 @@ This is a single-cluster local demo, not a production platform:
   weren't written to these conventions and enforcing it there would break them at admission
   time. This also means Gatekeeper only catches violations in *new* pods going forward; it
   doesn't retroactively audit-and-reject what was already running before a constraint was added.
-- CI doesn't spin up a cluster to test the actual ArgoCD sync — it validates manifests
-  statically. The full sync path is only exercised by running `scripts/deploy.sh` locally.
+- CI's `e2e-smoke-test` applies manifests directly and runs on a `kind` cluster, not against
+  ArgoCD or minikube — it doesn't test the actual GitOps sync path (app-of-apps discovery, the
+  ServerSideApply/CRD ordering issues documented in RUNBOOK.md, `kube-prometheus-stack`). Those
+  are only exercised by running `scripts/deploy.sh` and `scripts/test.sh` locally.
 
 See [SECURITY.md](SECURITY.md) for the full list of what's implemented vs. aspirational.
