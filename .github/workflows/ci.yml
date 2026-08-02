@@ -109,6 +109,9 @@ jobs:
 
       - name: Apply sample-app and greeter
         run: |
+          # ArgoCD normally creates these via CreateNamespace=true; kubectl apply doesn't.
+          kubectl create namespace app --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create namespace backend --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -f gitops/sample-app/
           kubectl apply -f gitops/greeter/
           kubectl rollout status deployment/sample-app -n app --timeout=120s
