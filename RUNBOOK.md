@@ -28,8 +28,10 @@ What this does, in order: starts minikube (4 CPU / 6GB by default — override w
 `MINIKUBE_CPUS`/`MINIKUBE_MEMORY` env vars), enables the `ingress` and `metrics-server` addons,
 builds both apps' Docker images directly into minikube's Docker daemon, installs the
 prometheus-operator CRDs via `kubectl apply --server-side` (see "Why server-side apply" in
-SECURITY.md/README if curious why that's a separate step), then installs ArgoCD, Gatekeeper, and
-cert-manager via Helm.
+SECURITY.md/README if curious why that's a separate step), then installs ArgoCD, Gatekeeper,
+cert-manager, and Sealed Secrets via Helm — restoring the Sealed Secrets signing key from
+`~/.minikube-gitops-platform/sealed-secrets-key.yaml` first if a backup from a previous run
+exists, so `gitops/sample-app/sealed-secret.yaml` stays decryptable across rebuilds.
 
 At the end it prints ArgoCD's admin password. If you need it again later:
 
@@ -70,6 +72,7 @@ kubectl get pods -n backend
 kubectl get pods -n monitoring
 kubectl get pods -n gatekeeper-system
 kubectl get pods -n cert-manager
+kubectl get pods -n sealed-secrets
 
 # The NetworkPolicies are actually in place
 kubectl get networkpolicy -n app
@@ -79,10 +82,16 @@ kubectl get networkpolicy -n backend
 kubectl get certificate -n app
 kubectl get certificate -n monitoring
 
+# The SealedSecret actually unsealed into a real Secret
+kubectl get sealedsecret -n app sample-app-secret
+kubectl get secret -n app sample-app-secret
+
 # sample-app can actually reach greeter, over TLS through the ingress path (same as test.sh)
 kubectl get secret local-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > /tmp/local-ca.crt
 kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8443:443 &
 curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/greeting
+# /health also reports api_key_configured:true if the Secret mounted correctly
+curl --cacert /tmp/local-ca.crt --resolve sample-app.local:8443:127.0.0.1 https://sample-app.local:8443/health
 kill %1
 ```
 
@@ -233,6 +242,22 @@ crashing `cert-manager`/`cert-manager-webhook` pod.
 **`curl` to a `*.local` host over plain HTTP hangs or returns a redirect you didn't expect** —
 expected: `ingress-nginx` redirects HTTP → HTTPS by default once TLS is configured on an Ingress.
 Use `https://` and `--cacert` as shown above, not `http://`.
+
+**`sample-app` pod stuck `CreateContainerConfigError`, or `/health` reports
+`api_key_configured: false`** — the `sample-app-secret` Secret doesn't exist or is empty, which
+means the SealedSecret failed to unseal. Check:
+
+```bash
+kubectl describe sealedsecret sample-app-secret -n app   # look at Events for the actual error
+kubectl get pods -n sealed-secrets                          # controller actually running?
+```
+
+If the events mention it can't decrypt / no key could decrypt this secret, the sealing key the
+committed `gitops/sample-app/sealed-secret.yaml` was sealed against doesn't match this cluster's
+current key — either the backup at `~/.minikube-gitops-platform/sealed-secrets-key.yaml` was
+missing/stale when you last ran `bootstrap.sh` (so the controller generated a fresh one), or
+you're on a different machine than the one that sealed it. Fix by re-sealing against *this*
+cluster: `./scripts/reseal-demo-secret.sh`, then commit and push.
 
 **An Application shows `Unknown` sync status with a `ComparisonError` mentioning a CRD kind**
 (e.g. `unable to resolve parseableType for ... Kind=Alertmanager`) — ArgoCD's cached API schema

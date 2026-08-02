@@ -41,6 +41,9 @@ check "sample-app /metrics exposes custom counter" bash -c \
 check "sample-app /greeting reaches greeter across namespaces" bash -c \
   "$HTTPS_CURL https://sample-app.local:8443/greeting | jq -e '.greeting' >/dev/null"
 
+check "sample-app decrypted its SealedSecret (api_key_configured: true)" bash -c \
+  "$HTTPS_CURL https://sample-app.local:8443/health | jq -e '.api_key_configured == true' >/dev/null"
+
 echo "==> Port-forwarding Prometheus to check sample-app and greeter targets"
 kubectl -n monitoring port-forward svc/kube-prometheus-stack-prometheus 9090:9090 >/tmp/prom-pf.log 2>&1 &
 PROM_PID=$!

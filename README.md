@@ -26,6 +26,8 @@ graph TD
     NetPol2["NetworkPolicy: default-deny + allow from app"] -.guards.-> Backend
     Gatekeeper["Gatekeeper admission webhook"] -.enforces on create/update.-> App
     Gatekeeper -.enforces on create/update.-> Backend
+    SealedSecret["sample-app-secret SealedSecret (ciphertext, safe in git)"] -->|decrypted by controller| Secret["sample-app-secret Secret (plaintext, in-cluster only)"]
+    Secret -->|API_KEY env var| App
 ```
 
 - **App-of-apps**: `gitops/root-app.yaml` is the one Application you apply by hand. It watches
@@ -60,11 +62,20 @@ graph TD
   manifests already do by convention — non-root, no privilege escalation, resource
   requests/limits required, no `:latest` image tags — scoped to the `app` and `backend`
   namespaces only, so it can't break the upstream charts running elsewhere in the cluster.
+- **Secrets management**: `sealed-secrets` (installed by `bootstrap.sh`, not GitOps-managed —
+  same reasoning as ArgoCD/Gatekeeper/cert-manager) lets `gitops/sample-app/sealed-secret.yaml`
+  be committed to git as ciphertext, decryptable only by the controller running in this specific
+  cluster. `sample-app` mounts the resulting Secret as `API_KEY` and reports
+  `api_key_configured: true` on `/health` — never the value itself — to prove it was actually
+  decrypted and wired up correctly, not just declared. See `scripts/reseal-demo-secret.sh` and
+  the "Rotate or re-seal" section below for the operational catch: the sealing key must survive
+  cluster rebuilds or every committed SealedSecret becomes permanently undecryptable.
 
 ## Prerequisites
 
 `minikube`, `kubectl`, `helm`, `docker`, `jq`. Tested with minikube v1.36, kubectl v1.33,
-helm v3.18, Docker 27.
+helm v3.18, Docker 27. `kubeseal` is only needed if you want to rotate the demo secret (see
+below) — `brew install kubeseal` or see [its releases](https://github.com/bitnami-labs/sealed-secrets/releases).
 
 ## How to run this
 
@@ -74,7 +85,8 @@ cd minikube-gitops-platform
 
 ./scripts/bootstrap.sh   # starts minikube, enables ingress/metrics-server,
                           # builds both app images into minikube's docker daemon,
-                          # installs ArgoCD, Gatekeeper, and cert-manager via Helm
+                          # installs ArgoCD, Gatekeeper, cert-manager, and
+                          # sealed-secrets via Helm
 
 ./scripts/deploy.sh      # applies the root Application, waits for everything
                           # to reach Synced + Healthy
@@ -117,6 +129,17 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
   -o jsonpath="{.data.password}" | base64 -d
 ```
 
+`gitops/sample-app/sealed-secret.yaml` was sealed against the maintainer's own cluster's key —
+`bootstrap.sh` backs that key up to `~/.minikube-gitops-platform/sealed-secrets-key.yaml` and
+restores it on every future bootstrap, so it stays decryptable across `minikube delete` cycles
+*on that machine*. If you're running this on a different machine (no matching key backup) or
+just want to rotate the demo value:
+
+```bash
+./scripts/reseal-demo-secret.sh "some-new-value"   # writes a fresh gitops/sample-app/sealed-secret.yaml
+git add gitops/sample-app/sealed-secret.yaml && git commit -m "rotate demo secret" && git push
+```
+
 Tear down when done:
 
 ```bash
@@ -147,10 +170,11 @@ Tear down when done:
 │   │   ├── policy-templates.yaml    # Application CR -> gitops/policies/templates/
 │   │   └── policy-constraints.yaml  # Application CR -> gitops/policies/constraints/
 │   ├── sample-app/               # plain k8s manifests for sample-app
-│   │   ├── deployment.yaml
+│   │   ├── deployment.yaml        # includes API_KEY from the SealedSecret below
 │   │   ├── service.yaml
 │   │   ├── ingress.yaml           # TLS via cert-manager.io/cluster-issuer annotation
-│   │   └── networkpolicy.yaml
+│   │   ├── networkpolicy.yaml
+│   │   └── sealed-secret.yaml     # ciphertext, safe to commit -- see scripts/reseal-demo-secret.sh
 │   ├── greeter/                  # plain k8s manifests for greeter
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
@@ -170,7 +194,8 @@ Tear down when done:
 │   ├── bootstrap.sh
 │   ├── deploy.sh
 │   ├── test.sh
-│   └── teardown.sh
+│   ├── teardown.sh
+│   └── reseal-demo-secret.sh     # regenerate gitops/sample-app/sealed-secret.yaml
 └── .github/workflows/ci.yml     # pytest x2, docker build + Trivy scan x2, kubeconform + yamllint,
                                    # e2e-smoke-test (kind cluster)
 ```
@@ -184,14 +209,17 @@ since there's no public schema for kubeconform to validate them against), and `y
 YAML across the repo.
 
 CI also stands up a real (scaled-down) cluster: the `e2e-smoke-test` job creates a `kind`
-cluster, installs Gatekeeper, applies `gitops/sample-app`, `gitops/greeter`, and
-`gitops/policies` directly via `kubectl apply`, then verifies the app actually serves traffic,
-successfully calls `greeter` across namespaces, and that Gatekeeper actually rejects a
-non-compliant pod. This is deliberately narrower than what `scripts/deploy.sh` does locally — it
-applies manifests directly rather than through ArgoCD (getting ArgoCD to sync against a PR's
-exact commit rather than `main` needs more infrastructure than is worth it for a CI job), and it
-skips `kube-prometheus-stack`/`ingress-nginx` entirely to stay within a GitHub-hosted runner's
-resources. See the job's comments in `.github/workflows/ci.yml` for the full reasoning. The
+cluster, installs Gatekeeper, cert-manager, and sealed-secrets, applies `gitops/sample-app`,
+`gitops/greeter`, `gitops/policies`, and `gitops/tls` directly via `kubectl apply`, then verifies
+the app actually serves traffic, successfully calls `greeter` across namespaces, decrypted its
+Secret correctly, and that Gatekeeper actually rejects a non-compliant pod. This is deliberately
+narrower than what `scripts/deploy.sh` does locally — it applies manifests directly rather than
+through ArgoCD (getting ArgoCD to sync against a PR's exact commit rather than `main` needs more
+infrastructure than is worth it for a CI job), skips `kube-prometheus-stack`/`ingress-nginx`
+entirely to stay within a GitHub-hosted runner's resources, and creates the demo Secret directly
+rather than relying on the committed `sealed-secret.yaml` (which is sealed against the
+maintainer's own cluster and, by design, can never decrypt anywhere else — see the job's comments
+for why that's expected, not a bug). See `.github/workflows/ci.yml` for the full reasoning. The
 ArgoCD sync path and the full monitoring stack are only exercised by running `scripts/deploy.sh`
 and `scripts/test.sh` locally.
 
@@ -206,8 +234,11 @@ This is a single-cluster local demo, not a production platform:
   above), not from a real certificate authority. cert-manager itself and the cert chain it
   issues are real, working machinery — just not backed by a CA anyone outside this cluster
   would trust.
-- No secrets management beyond Kubernetes' built-in Secrets (which are base64, not encrypted
-  at rest by default). A real deployment would add Sealed Secrets, External Secrets, or Vault.
+- Sealed Secrets is included and demonstrated (`gitops/sample-app/sealed-secret.yaml`), but it
+  only solves "safe to commit to git" — the resulting plaintext Secret is still an ordinary
+  Kubernetes Secret once decrypted (base64 in etcd, not encrypted at rest by default). A real
+  deployment would add etcd encryption at rest and/or move to External Secrets/Vault for
+  dynamic secrets, rotation, and audit logging, none of which is here.
 - No service mesh (Istio/Linkerd) — deliberately left out to keep the resource footprint small
   on a 16GB laptop. Gatekeeper is included, but scoped to only the `app`/`backend` namespaces —
   the upstream ArgoCD/monitoring charts running elsewhere aren't policed by it, since they

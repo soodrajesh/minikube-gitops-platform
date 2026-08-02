@@ -128,11 +128,29 @@ jobs:
           kubectl wait --for=condition=Ready certificate/local-ca -n cert-manager --timeout=60s
           kubectl wait --for=condition=Ready clusterissuer/ca-issuer --timeout=60s
 
+      - name: Install Sealed Secrets
+        run: |
+          helm repo add sealed-secrets https://bitnami.github.io/sealed-secrets
+          helm repo update
+          helm upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
+            --namespace sealed-secrets --create-namespace \
+            --wait --timeout 5m
+
       - name: Apply sample-app and greeter
         run: |
           # ArgoCD normally creates these via CreateNamespace=true; kubectl apply doesn't.
           kubectl create namespace app --dry-run=client -o yaml | kubectl apply -f -
           kubectl create namespace backend --dry-run=client -o yaml | kubectl apply -f -
+          # gitops/sample-app/sealed-secret.yaml is ciphertext sealed against the maintainer's
+          # local minikube cluster's key -- it can never decrypt against this kind cluster's own
+          # (freshly generated) key, by design; that's the whole point of sealed-secrets. Create
+          # the plaintext Secret directly instead, so the Deployment's secretKeyRef resolves the
+          # same way it would once the real SealedSecret unseals locally. The SealedSecret object
+          # itself still gets applied below and will sit in a permanently-failed state in this
+          # cluster; that's expected and harmless, it doesn't own or block the Secret above.
+          kubectl create secret generic sample-app-secret -n app \
+            --from-literal=api-key=ci-smoke-test-dummy-key \
+            --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -f gitops/sample-app/
           kubectl apply -f gitops/greeter/
           kubectl rollout status deployment/sample-app -n app --timeout=120s
@@ -147,8 +165,9 @@ jobs:
           kubectl -n app port-forward svc/sample-app 8080:80 &
           PF_PID=$!
           sleep 3
-          curl -sf --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8080/health
+          curl -sf --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8080/health | tee /tmp/health.json
           echo
+          [ "$(jq -r .api_key_configured /tmp/health.json)" = "true" ]
           curl -sf --retry 5 --retry-connrefused --retry-delay 2 http://localhost:8080/greeting | grep -q greeting
           kill "$PF_PID"
 
