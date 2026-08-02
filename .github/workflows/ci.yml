@@ -44,11 +44,12 @@ jobs:
       - name: kubeconform - lint plain k8s manifests
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
-          ./kubeconform -strict -summary gitops/sample-app gitops/greeter
-          # gatekeeper's and cert-manager's CRD kinds (ConstraintTemplate, K8sRequire*,
-          # ClusterIssuer, Certificate, etc.) have no public schema for kubeconform to
-          # validate against; just check they parse.
-          ./kubeconform -strict -summary -ignore-missing-schemas gitops/policies gitops/tls
+          ./kubeconform -strict -summary gitops/greeter
+          # gatekeeper's, cert-manager's, and sealed-secrets' CRD kinds (ConstraintTemplate,
+          # K8sRequire*, ClusterIssuer, Certificate, SealedSecret, etc.) have no public schema
+          # for kubeconform to validate against; just check they parse. gitops/sample-app is
+          # included here too because it contains a SealedSecret alongside plain resources.
+          ./kubeconform -strict -summary -ignore-missing-schemas gitops/sample-app gitops/policies gitops/tls
       - name: yamllint
         run: |
           pip install yamllint
