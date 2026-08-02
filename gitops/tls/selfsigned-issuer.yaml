@@ -1,0 +1,8 @@
+# Bootstrap issuer: has no CA of its own, just signs itself. Used exactly once,
+# to mint the local CA certificate below. Nothing else should reference this issuer.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}

@@ -4,9 +4,13 @@ metadata:
   name: sample-app
   namespace: app
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    cert-manager.io/cluster-issuer: ca-issuer
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - sample-app.local
+      secretName: sample-app-tls
   rules:
     - host: sample-app.local
       http:

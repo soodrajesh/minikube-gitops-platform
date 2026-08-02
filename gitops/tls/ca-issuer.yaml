@@ -1,0 +1,10 @@
+# The issuer apps actually use: signs leaf certificates (sample-app.local, grafana.local)
+# with the local CA above, instead of self-signing each one individually. This is what
+# makes it possible to trust one CA cert locally and have every ingress host verify clean.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ca-issuer
+spec:
+  ca:
+    secretName: local-ca-secret
